@@ -1,5 +1,5 @@
 ARG BUILD_FROM
-FROM ${BUILD_FROM}
+FROM node:22-alpine
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
