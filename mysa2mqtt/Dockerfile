@@ -1,9 +1,13 @@
 ARG BUILD_FROM
-FROM node:22-alpine
+FROM ${BUILD_FROM}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN npm install -g mysa2mqtt \
+RUN apk add --no-cache nodejs-current npm
+
+RUN node -v \
+    && npm -v \
+    && npm install -g mysa2mqtt \
     && npm cache clean --force
 
 COPY run.sh /
