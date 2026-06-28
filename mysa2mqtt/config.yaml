@@ -1,5 +1,5 @@
 name: Mysa2MQTT
-version: "1.0.7"
+version: "1.0.8"
 slug: mysa2mqtt
 description: Run mysa2mqtt for Mysa thermostats using MQTT discovery
 url: https://github.com/YOUR_GITHUB_USERNAME/mysa2mqtt-ha-addon
