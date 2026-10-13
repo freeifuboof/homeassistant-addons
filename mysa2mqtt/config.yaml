@@ -1,5 +1,5 @@
 name: Mysa2MQTT
-version: "1.1.0"
+version: "1.2.0"
 slug: mysa2mqtt
 description: Bridge Mysa thermostats to MQTT with Home Assistant discovery
 url: https://github.com/freeifuboof/homeassistant-addons/tree/main/mysa2mqtt

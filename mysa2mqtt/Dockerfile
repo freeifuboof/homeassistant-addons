@@ -1,8 +1,10 @@
-FROM node:22-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 
-RUN npm install -g mysa2mqtt \
+# Pinned: 2.0.0+ re-authenticates with credentials instead of a persisted
+# session file, so an expired refresh token no longer crashes the add-on.
+RUN npm install -g mysa2mqtt@3.2.7 \
     && npm cache clean --force
 
 COPY run.sh /run.sh
