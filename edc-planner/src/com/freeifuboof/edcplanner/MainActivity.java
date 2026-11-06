@@ -1,6 +1,8 @@
 package com.freeifuboof.edcplanner;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -20,10 +22,15 @@ public class MainActivity extends Activity {
     static final String PREFS = "edc_planner";
     static final String POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS";
     private WebView web;
+    private ClipboardManager clipboard;
+    /** Text shared into the app (a friend's crew code), picked up by the page. */
+    private volatile String incoming;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        takeShared(getIntent());
         web = new WebView(this);
         web.setBackgroundColor(Color.parseColor("#0b0614"));
         WebSettings s = web.getSettings();
@@ -41,6 +48,20 @@ public class MainActivity extends Activity {
             web.restoreState(savedInstanceState);
         } else {
             web.loadUrl("file:///android_asset/index.html");
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        takeShared(intent);
+        if (web != null) web.evaluateJavascript("window.onAppResume && window.onAppResume()", null);
+    }
+
+    private void takeShared(Intent intent) {
+        if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
+            CharSequence t = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            if (t != null) incoming = t.toString();
         }
     }
 
@@ -97,6 +118,30 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void save(String json) {
             prefs().edit().putString("state", json).apply();
+        }
+
+        @JavascriptInterface
+        public String takeIncoming() {
+            String t = act.incoming;
+            act.incoming = null;
+            return t == null ? "" : t;
+        }
+
+        @JavascriptInterface
+        public void copy(String text) {
+            act.clipboard.setPrimaryClip(ClipData.newPlainText("EDC crew code", text));
+        }
+
+        @JavascriptInterface
+        public String paste() {
+            try {
+                ClipData c = act.clipboard.getPrimaryClip();
+                if (c == null || c.getItemCount() == 0) return "";
+                CharSequence t = c.getItemAt(0).coerceToText(act);
+                return t == null ? "" : t.toString();
+            } catch (Exception e) {
+                return "";
+            }
         }
 
         @JavascriptInterface

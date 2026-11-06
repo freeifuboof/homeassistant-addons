@@ -7,6 +7,13 @@ A pocket planner for **EDC Orlando 2026** (Tinker Field, Nov 6–8). It works of
 - **Map**: the festival map with stage pins, what's on at each stage right now, and the walking route for any step in your plan.
 - **Posters**: the original day posters, with pinch zoom.
 - **Reminders** (⚙ Settings): a notification 5–20 min before you need to walk to your next set.
+- **Crew**: see your friends' picks and where they overlap with yours:
+  - each person shares a short *crew code* (by text, WhatsApp, etc.) and the others paste it in, or share the message straight to EDC Planner;
+  - *Together*: the times you'll be at the same set as friends;
+  - *Crew favorites*: sets several of you picked;
+  - *Where everyone is*: during the festival, where each friend's plan puts them;
+  - colored dots on the schedule and "👥 with …" on your plan show who's going where.
+  Codes are a snapshot, so a friend who changes picks needs to share again. No account or internet needed.
 - Search (⌕) by artist or genre across all days, and share your plan as text.
 
 ## Install on a Samsung phone
