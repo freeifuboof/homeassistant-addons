@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>edc-sync</Name>
+  <Repository>ghcr.io/freeifuboof/edc-sync:latest</Repository>
+  <Registry>https://github.com/freeifuboof/homeassistant-addons/pkgs/container/edc-sync</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/freeifuboof/homeassistant-addons/tree/main/edc-sync</Support>
+  <Project>https://github.com/freeifuboof/homeassistant-addons</Project>
+  <Overview>Live crew sync for the EDC Planner Android app. Friends' picks sync through this server; the app keeps working offline. Expose it with a Cloudflare Tunnel.</Overview>
+  <Category>Tools: Other</Category>
+  <WebUI>http://[IP]:[PORT:8787]/api/health</WebUI>
+  <Icon>https://raw.githubusercontent.com/freeifuboof/homeassistant-addons/main/edc-planner/icon-512.png</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <Config Name="Port" Target="8787" Default="8787" Mode="tcp" Description="Point your Cloudflare Tunnel public hostname at http://UNRAID-IP:this-port" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/edc-sync" Mode="rw" Description="Where crews are stored (one small JSON file)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/edc-sync</Config>
+  <Config Name="Max crews" Target="MAX_CREWS" Default="500" Mode="" Description="Server-wide crew limit" Type="Variable" Display="advanced" Required="false" Mask="false">500</Config>
+  <Config Name="Max members per crew" Target="MAX_MEMBERS" Default="40" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">40</Config>
+  <Config Name="New crews per hour per IP" Target="CREATE_PER_HOUR" Default="10" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
+  <Config Name="Delete idle crews after (days)" Target="CREW_TTL_DAYS" Default="60" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">60</Config>
+</Container>

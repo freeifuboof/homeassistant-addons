@@ -263,6 +263,7 @@
   }
   function changed() {
     planCache = {};
+    markDirty();
     save();
     renderAll();
     syncReminders();
@@ -605,15 +606,23 @@
   function decodeCode(nameB64, bitsB64) {
     try {
       const name = new TextDecoder("utf-8", { fatal: true }).decode(b64d(nameB64)).trim().slice(0, 24);
+      const picks = decodeBits(bitsB64);
+      return name && picks ? { name, picks } : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function decodeBits(bitsB64) {
+    try {
       const bytes = b64d(bitsB64);
       const n = Math.ceil(ALL_IDS.length / 4);
-      if (!name || bytes.length !== n + 1 || bytes[n] !== checksum(bytes, n)) return null;
+      if (bytes.length !== n + 1 || bytes[n] !== checksum(bytes, n)) return null;
       const picks = {};
       ALL_IDS.forEach((id, i) => {
         const v = (bytes[i >> 2] >> ((i & 3) * 2)) & 3;
         if (v === 1 || v === 2) picks[id] = v;
       });
-      return { name, picks };
+      return picks;
     } catch (e) {
       return null;
     }
@@ -641,8 +650,9 @@
   // Imports every crew code found in a block of text (a pasted or shared message).
   function importCrewText(text) {
     if (!text) return false;
+    if (handleInvite(text)) return true;
     const found = Array.from(String(text).matchAll(CODE_RE));
-    if (!found.length) { toast("No crew code found in that text"); return false; }
+    if (!found.length) { toast("No crew code or invite link found in that text"); return false; }
     const msgs = [];
     found.forEach((m) => {
       const c = decodeCode(m[1], m[2]);
@@ -720,7 +730,223 @@
       planFor(dayId, f.id).route.some((n) => n.set.id === node.set.id && n.from < node.to && n.to > node.from));
   }
 
+  // ---------- live sync (edc-sync server) ----------
+  // Picks are always saved on the phone first. When there's signal, your picks are uploaded
+  // and everyone else's are downloaded. With no signal the app just uses the last copy it got.
+  const INVITE_APP_RE = /edcplanner:\/\/join\?s=([^&\s]+)&t=([A-Za-z0-9_-]{22,64})/;
+  const INVITE_WEB_RE = /(https?:\/\/[^\s#]+?)\/join#([A-Za-z0-9_-]{22,64})/;
+  let syncing = false, syncTimer = null;
+
+  function randId(bytes) {
+    const a = new Uint8Array(bytes);
+    crypto.getRandomValues(a);
+    return b64e(a);
+  }
+  function normServer(u) {
+    u = String(u || "").trim().replace(/\/+$/, "");
+    if (!u) return "";
+    if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+    return u;
+  }
+  function myBits() {
+    return myCode().split(".")[2];
+  }
+  function inviteLink() {
+    return state.sync ? state.sync.server + "/join#" + state.sync.token : "";
+  }
+
+  async function api(method, path, body) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 12000);
+    try {
+      const r = await fetch(state.sync.server + path, {
+        method, signal: ctl.signal,
+        headers: { "Content-Type": "application/json", "X-Member-Key": state.sync.key },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const json = await r.json().catch(() => ({}));
+      if (!r.ok) throw Object.assign(new Error(json.error || "Server error " + r.status), { status: r.status });
+      return json;
+    } catch (e) {
+      if (!e.status) throw Object.assign(new Error("No connection"), { offline: true });
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // called whenever state changes: flags an upload if your name/picks differ from what the server has
+  function markDirty() {
+    if (!state.sync) return;
+    const sig = state.me + "|" + myBits();
+    if (sig !== state.sync.sentSig) { state.sync.dirty = true; syncSoon(); }
+  }
+  function syncSoon() {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(syncNow, 1500);
+  }
+
+  async function syncNow(manual) {
+    const s = state.sync;
+    if (!s || syncing) return;
+    syncing = true;
+    s.lastTry = Date.now();
+    try {
+      let view;
+      if (s.dirty && state.me) {
+        const sig = state.me + "|" + myBits();
+        view = await api("PUT", `/api/crews/${s.token}/members/${s.memberId}`, { name: state.me, bits: myBits() });
+        s.sentSig = sig;
+        s.dirty = (state.me + "|" + myBits()) !== sig; // changed again while uploading
+      } else {
+        view = await api("GET", `/api/crews/${s.token}?me=${s.memberId}`);
+      }
+      applyCrew(view);
+      s.lastOk = Date.now();
+      s.lastErr = "";
+      if (manual) toast("Synced ✓");
+    } catch (e) {
+      s.lastErr = e.message;
+      if (manual) toast(e.offline ? "No signal. Will sync when you're back online" : e.message);
+    } finally {
+      syncing = false;
+      save();
+      if (state.view === "crew" || state.view === "schedule" || state.view === "plan") renderAll();
+      if (s.dirty && !s.lastErr) syncSoon();
+    }
+  }
+
+  function applyCrew(view) {
+    const s = state.sync;
+    s.crewName = view.name || s.crewName;
+    const skew = Date.now() - (view.now || Date.now()); // server clock → phone clock
+    const seenIds = new Set();
+    (view.members || []).forEach((m) => {
+      if (m.id === s.memberId) return;
+      const picks = decodeBits(m.bits);
+      if (!picks) return;
+      const id = "live-" + m.id;
+      seenIds.add(id);
+      let f = friendById(id);
+      if (!f) {
+        // replace a code-imported friend with the same name by their live version
+        const twin = state.friends.find((x) => !x.live && x.name.toLowerCase() === m.name.toLowerCase());
+        const used = state.friends.map((x) => x.color);
+        f = { id, live: true, hidden: twin ? twin.hidden : false,
+          color: twin ? twin.color : CREW_COLORS.find((c) => !used.includes(c)) || CREW_COLORS[state.friends.length % CREW_COLORS.length] };
+        if (twin) state.friends = state.friends.filter((x) => x !== twin);
+        state.friends.push(f);
+      }
+      f.name = cleanName(m.name);
+      f.picks = picks;
+      f.updated = m.updated + skew;
+      f.seen = m.seen + skew;
+    });
+    state.friends = state.friends.filter((f) => !f.live || seenIds.has(f.id));
+    planCache = {};
+  }
+  function cleanName(n) {
+    return String(n || "").trim().slice(0, 24) || "Friend";
+  }
+
+  async function createCrew() {
+    const server = normServer($("#server-url") ? $("#server-url").value : state.lastServer);
+    if (!state.me) { toast("Add your name first"); return; }
+    if (!server) { toast("Enter your sync server address"); return; }
+    state.lastServer = server;
+    try {
+      const ctl = new AbortController();
+      setTimeout(() => ctl.abort(), 12000);
+      const r = await fetch(server + "/api/crews", { method: "POST", signal: ctl.signal,
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: state.me + "'s crew" }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Server error " + r.status);
+      await joinCrew(server, j.token, true);
+      toast("Live crew created. Now invite your friends");
+    } catch (e) {
+      toast(e.name === "AbortError" || e instanceof TypeError ? "Couldn't reach " + server : e.message);
+    }
+  }
+
+  async function joinCrew(server, token, quiet) {
+    if (state.sync && state.sync.token === token) { if (!quiet) toast("You're already in this crew"); setView("crew"); return; }
+    if (state.sync && !confirm("You're already in a live crew. Leave it and join this one?")) return;
+    if (state.sync) await leaveCrew(true);
+    state.lastServer = server;
+    state.sync = { server, token, memberId: randId(9), key: randId(18), dirty: true, sentSig: "", lastOk: 0, lastErr: "", crewName: "" };
+    save();
+    setView("crew");
+    if (!quiet) toast(state.me ? "Joining crew…" : "Joined! Add your name so friends can see you");
+    await syncNow();
+  }
+
+  async function leaveCrew(quiet) {
+    const s = state.sync;
+    if (!s) return;
+    try { await api("DELETE", `/api/crews/${s.token}/members/${s.memberId}`); } catch (e) { /* offline: slot just goes stale */ }
+    state.sync = null;
+    state.friends = state.friends.filter((f) => !f.live);
+    planCache = {};
+    save();
+    if (!quiet) { toast("Left the live crew"); renderAll(); }
+  }
+
+  function shareInvite() {
+    const link = inviteLink();
+    const txt = `Join my EDC Orlando crew 🎶 Our plans sync live in EDC Planner.\nTap to join: ${link}`;
+    if (window.Native) window.Native.share(txt);
+    else if (navigator.share) navigator.share({ text: txt });
+    else copyText(txt);
+  }
+
+  // returns true if the text held an invite link
+  function handleInvite(text) {
+    let m = String(text).match(INVITE_APP_RE);
+    let server, token;
+    if (m) { server = normServer(decodeURIComponent(m[1])); token = m[2]; }
+    else if ((m = String(text).match(INVITE_WEB_RE))) { server = normServer(m[1]); token = m[2]; }
+    if (!server) return false;
+    joinCrew(server, token);
+    return true;
+  }
+
+  function ago(t) {
+    const m = Math.round((Date.now() - t) / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return m + " min ago";
+    const h = Math.round(m / 60);
+    if (h < 24) return h + "h ago";
+    return new Date(t).toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
+  function syncCardHtml() {
+    const s = state.sync;
+    if (!s) {
+      return `<div class="crew-card">
+        <label>Live sync</label>
+        <p class="small" style="margin-top:0">Friends' plans update by themselves through your own sync server. Everything still works offline.</p>
+        <div class="row"><input id="server-url" placeholder="edc.yourdomain.com" value="${esc((state.lastServer || "").replace(/^https:\/\//, ""))}" autocomplete="off" spellcheck="false" inputmode="url">
+        <button class="chip-btn" id="create-crew">Create</button></div>
+        <p class="small">Joining a friend's crew? Open their invite link, or copy it and tap Paste below.</p></div>`;
+    }
+    let dot = "ok", status;
+    if (s.lastErr && s.lastErr !== "No connection") { dot = "bad"; status = esc(s.lastErr); }
+    else if (s.lastErr) { dot = "off"; status = `Offline · showing plans from ${s.lastOk ? ago(s.lastOk) : "before"} · will sync when you have signal`; }
+    else if (s.lastOk) status = `Live · synced ${ago(s.lastOk)}`;
+    else { dot = "off"; status = "Connecting…"; }
+    if (s.dirty) status += !state.me ? " · add your name to share your picks" : " · your changes are waiting to upload";
+    return `<div class="crew-card">
+      <label>Live crew${s.crewName ? " · " + esc(s.crewName) : ""}</label>
+      <div class="sync-status"><i class="sdot ${dot}"></i><span>${status}</span></div>
+      <div class="row gap"><button class="big-btn" id="invite">Invite friends</button></div>
+      <div class="row gap"><button class="chip-btn grow" id="sync-now">↻ Sync now</button><button class="chip-btn grow dim" id="leave-crew">Leave crew</button></div>
+    </div>`;
+  }
+
   function renderCrew() {
+    // don't redraw under someone typing (the 60s refresh and sync would wipe the field)
+    const a = document.activeElement;
+    if (a && a.tagName === "INPUT" && a.closest("#crew")) return;
     const day = DAY[state.day];
     const el = $("#crew");
     const nowMin = nowMinFor(day);
@@ -731,16 +957,18 @@
       <label>Your name</label>
       <div class="row"><input id="me-name" maxlength="24" placeholder="So friends know it's you" value="${esc(state.me)}">
       <button class="chip-btn" id="save-name">Save</button></div>
-      <div class="row gap">
+      ${state.sync ? "" : `<div class="row gap">
         <button class="big-btn" id="share-code">Share my crew code</button>
       </div>
-      <p class="small">Send your code to friends. Their codes go in below. If you change your picks, share your code again.</p>
+      <p class="small">No server? Send your code to friends instead. Their codes go in below. If you change your picks, share your code again.</p>`}
     </div>`;
+
+    html += syncCardHtml();
 
     // add friend
     html += `<div class="crew-card">
-      <label>Add a friend</label>
-      <button class="big-btn ghost" id="paste-code">📋 Paste friend's code</button>
+      <label>Add a friend${state.sync ? " (not in your live crew)" : ""}</label>
+      <button class="big-btn ghost" id="paste-code">📋 Paste code or invite link</button>
       <div class="row"><input id="code-box" placeholder="…or type it here (EDC1.…)" autocomplete="off" spellcheck="false">
       <button class="chip-btn" id="add-code">Add</button></div>
       <p class="small">In WhatsApp or Messages you can also long-press their message, tap Share and pick <b>EDC Planner</b>.</p>
@@ -760,9 +988,10 @@
       html += `<div class="friend ${f.hidden ? "off" : ""}" style="--c:${f.color}">
         ${avatar(f, true)}
         <button class="finfo" data-friend="${f.id}"><b>${esc(f.name)}</b>
-          <span>${theirs.length} picks on ${day.label} · ${shared} shared with you</span></button>
+          <span>${theirs.length} picks on ${day.label} · ${shared} shared with you</span>
+          <span class="fsrc">${f.live ? `<i class="sdot ok"></i>live · active ${ago(f.seen || f.updated)}` : `code from ${f.updated ? ago(f.updated) : "earlier"}`}</span></button>
         <button class="fbtn" data-hide="${f.id}" aria-label="Show or hide">${f.hidden ? "◌" : "◉"}</button>
-        <button class="fbtn" data-unfriend="${f.id}" aria-label="Remove">✕</button></div>`;
+        ${f.live ? "" : `<button class="fbtn" data-unfriend="${f.id}" aria-label="Remove">✕</button>`}</div>`;
     });
     html += `</div><p class="small">Tap a friend to see their plan. ◉ / ◌ shows or hides them on the schedule and in the overlaps below.</p>`;
 
@@ -836,7 +1065,9 @@
         <div class="mk ${mine === 2 ? "must" : mine === 1 ? "want" : ""}">${mine === 2 ? "♥" : mine === 1 ? "★" : "☆"}</div></div>`;
     });
     const updated = f.updated ? new Date(f.updated).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
-    html += `<p class="small">Tap a set to add it to your own plan. Code received ${updated}. Ask ${esc(f.name)} to share again if they change plans.</p>`;
+    html += f.live
+      ? `<p class="small">Tap a set to add it to your own plan. Live: ${esc(f.name)} last changed picks ${ago(f.updated)}, last online ${ago(f.seen || f.updated)}.</p>`
+      : `<p class="small">Tap a set to add it to your own plan. Code received ${updated}. Ask ${esc(f.name)} to share again if they change plans.</p>`;
     openSheet(html);
   }
 
@@ -881,6 +1112,8 @@
   document.addEventListener("click", (e) => {
     const t = e.target;
     let el;
+    const ae = document.activeElement;
+    if (t.closest("button") && ae && ae.tagName === "INPUT") ae.blur();
     if ((el = t.closest("#days button"))) {
       state.day = el.dataset.day; mapRoute = null; save(); renderAll();
       if (state.view === "schedule") $("#view-schedule").scrollTop = 0;
@@ -899,14 +1132,18 @@
       return;
     }
     if (t.closest("#save-name")) {
-      state.me = $("#me-name").value.trim().slice(0, 24); save(); toast(state.me ? "Hi " + state.me + "!" : "Name cleared"); renderCrew(); return;
+      state.me = $("#me-name").value.trim().slice(0, 24); markDirty(); save(); toast(state.me ? "Hi " + state.me + "!" : "Name cleared"); renderCrew(); return;
     }
     if (t.closest("#share-code")) {
       const v = $("#me-name").value.trim().slice(0, 24);
-      if (v !== state.me) { state.me = v; save(); }
+      if (v !== state.me) { state.me = v; markDirty(); save(); }
       shareMyCode(); return;
     }
     if (t.closest("#paste-code")) { pasteCrew(); return; }
+    if (t.closest("#create-crew")) { createCrew(); return; }
+    if (t.closest("#invite")) { shareInvite(); return; }
+    if (t.closest("#sync-now")) { syncNow(true); return; }
+    if (t.closest("#leave-crew")) { if (confirm("Leave the live crew? Their plans will disappear from your app.")) leaveCrew(); return; }
     if (t.closest("#add-code")) { if (importCrewText($("#code-box").value)) $("#code-box").value = ""; return; }
     if ((el = t.closest("[data-remove]"))) { const s = SETS[el.dataset.remove]; setPick(s.id, 0); toast("Removed " + s.name); return; }
     if ((el = t.closest("[data-must]"))) {
@@ -950,7 +1187,8 @@
   });
 
   document.addEventListener("change", (e) => {
-    if (e.target.id === "me-name") { state.me = e.target.value.trim().slice(0, 24); save(); }
+    if (e.target.id === "me-name") { state.me = e.target.value.trim().slice(0, 24); markDirty(); save(); }
+    if (e.target.id === "server-url") { state.lastServer = normServer(e.target.value); save(); }
   });
   $("#search").addEventListener("input", () => { renderSearch(); $("#view-schedule").scrollTop = 0; });
 
@@ -965,7 +1203,9 @@
     const t = window.Native.takeIncoming();
     if (t) { importCrewText(t); setView("crew"); }
   }
-  window.onAppResume = function () { planCache = {}; renderAll(); checkIncoming(); };
+  window.onAppResume = function () { planCache = {}; renderAll(); checkIncoming(); syncNow(); };
+  window.addEventListener("online", () => syncNow());
+  setInterval(() => { if (!document.hidden) syncNow(); }, 60000);
 
   // demo hook for testing the "live" features: EDC_DEMO("sat", "8:15")
   window.EDC_DEMO = function (dayId, t) { state.demoNow = dayId ? { day: dayId, min: toMin(t) } : null; state.day = dayId || state.day; renderAll(); };
@@ -981,5 +1221,6 @@
   }
   syncReminders();
   checkIncoming();
+  syncNow();
   window.EDC_CREW = { encodeCode, importCrewText };
 })();

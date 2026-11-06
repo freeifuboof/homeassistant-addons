@@ -59,9 +59,12 @@ public class MainActivity extends Activity {
     }
 
     private void takeShared(Intent intent) {
-        if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
+        if (intent == null) return;
+        if (Intent.ACTION_SEND.equals(intent.getAction())) {
             CharSequence t = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
             if (t != null) incoming = t.toString();
+        } else if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getDataString() != null) {
+            incoming = intent.getDataString();
         }
     }
 

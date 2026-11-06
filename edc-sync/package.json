@@ -1,0 +1,9 @@
+{
+  "name": "edc-sync",
+  "version": "1.0.0",
+  "description": "Live crew sync server for the EDC Planner app",
+  "main": "server.js",
+  "private": true,
+  "scripts": { "start": "node server.js", "test": "node test.js" },
+  "license": "MIT"
+}

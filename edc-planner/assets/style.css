@@ -290,3 +290,13 @@ h3.sec { font-size: 12px; letter-spacing: 1.5px; color: var(--dim); text-transfo
 .set .crew-dots { position: absolute; left: 4px; bottom: 4px; display: flex; gap: 2px; }
 .set .crew-dots i { width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 1px #0008; }
 nav#tabs button { font-size: 10.5px; }
+
+/* ---------- live sync ---------- */
+.sync-status { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--dim); }
+.sdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--neon); box-shadow: 0 0 8px var(--neon); flex: none; margin-top: 4px; }
+.sdot.off { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.sdot.bad { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+.fsrc { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dim); }
+.fsrc .sdot { width: 7px; height: 7px; margin-top: 0; }
+.chip-btn.grow { flex: 1; }
+.chip-btn.dim { color: var(--dim); }
