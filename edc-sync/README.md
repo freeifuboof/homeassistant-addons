@@ -6,6 +6,7 @@ Live crew sync for the [EDC Planner](../edc-planner) app. Friends in a crew see 
 - Crews are private: you join one only through its invite link, and the server stores just a hash of the link's secret.
 - Each phone gets its own key, so crew members can't overwrite each other's picks.
 - Limits on request rate, crew size, body size and crew count. Crews idle for 60 days are deleted.
+- **Locations** (Find my crew) are kept **in memory only**, never written to disk, and disappear after 2 hours or when someone stops sharing. A server restart wipes them.
 
 ## 1. Get the image
 
@@ -62,6 +63,7 @@ The Cloudflare dashboard gets reorganized now and then, so menu names may differ
 | `CREATE_PER_HOUR` | 10 | new crews per IP per hour |
 | `RATE_PER_MIN` | 120 | API requests per IP per minute |
 | `CREW_TTL_DAYS` | 60 | delete crews unused this long |
+| `LOC_TTL_MIN` | 120 | forget a shared location after this many minutes |
 
 ## Develop
 

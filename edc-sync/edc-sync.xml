@@ -18,5 +18,6 @@
   <Config Name="Max crews" Target="MAX_CREWS" Default="500" Mode="" Description="Server-wide crew limit" Type="Variable" Display="advanced" Required="false" Mask="false">500</Config>
   <Config Name="Max members per crew" Target="MAX_MEMBERS" Default="40" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">40</Config>
   <Config Name="New crews per hour per IP" Target="CREATE_PER_HOUR" Default="10" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
+  <Config Name="Forget locations after (minutes)" Target="LOC_TTL_MIN" Default="120" Mode="" Description="Shared locations live in memory only and expire after this" Type="Variable" Display="advanced" Required="false" Mask="false">120</Config>
   <Config Name="Delete idle crews after (days)" Target="CREW_TTL_DAYS" Default="60" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">60</Config>
 </Container>

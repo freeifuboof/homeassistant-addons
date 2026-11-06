@@ -24,6 +24,17 @@ const TRUST_PROXY = process.env.TRUST_PROXY !== "false"; // use CF-Connecting-IP
 const TOKEN_RE = /^[A-Za-z0-9_-]{22,64}$/;
 const ID_RE = /^[A-Za-z0-9_-]{8,32}$/;
 const BITS_RE = /^[A-Za-z0-9_-]{4,96}$/;
+const LOC_TTL_MS = Number(process.env.LOC_TTL_MIN || 120) * 60000;
+
+// Live locations are kept in memory only (never written to disk) and expire after LOC_TTL_MS.
+const locs = new Map(); // crewHash -> Map(memberId -> {lat, lon, acc, t})
+setInterval(() => {
+  const cutoff = Date.now() - LOC_TTL_MS;
+  for (const [h, m] of locs) {
+    for (const [id, l] of m) if (l.t < cutoff) m.delete(id);
+    if (!m.size) locs.delete(h);
+  }
+}, 300000).unref();
 
 // ---------- storage ----------
 let db = { crews: {} };
@@ -124,14 +135,18 @@ function cleanName(n) {
   return String(n || "").replace(/[\u0000-\u001f\u007f<>]/g, "").trim().slice(0, 24);
 }
 
-function crewView(crew) {
+function crewView(crew, hash) {
   const now = Date.now();
+  const cl = locs.get(hash);
   return {
     now,
     name: crew.name,
-    members: Object.entries(crew.members).map(([id, m]) => ({
-      id, name: m.name, bits: m.bits, updated: m.updated, seen: m.seen
-    }))
+    meet: crew.meet || null,
+    members: Object.entries(crew.members).map(([id, m]) => {
+      const l = cl && cl.get(id);
+      return { id, name: m.name, bits: m.bits, updated: m.updated, seen: m.seen,
+        loc: l && now - l.t < LOC_TTL_MS ? l : null };
+    })
   };
 }
 
@@ -163,7 +178,8 @@ async function handle(req, res) {
   if (parts[1] === "crews" && parts[2]) {
     const token = parts[2];
     if (!TOKEN_RE.test(token)) return send(res, 400, { error: "Bad crew token" });
-    const crew = db.crews[sha(token)];
+    const hash = sha(token);
+    const crew = db.crews[hash];
     if (!crew) return send(res, 404, { error: "Crew not found. It may have expired." });
 
     if (req.method === "GET" && parts.length === 3) {
@@ -171,16 +187,56 @@ async function handle(req, res) {
       if (me && crew.members[me]) { crew.members[me].seen = Date.now(); }
       crew.touched = Date.now();
       save();
-      return send(res, 200, crewView(crew));
+      return send(res, 200, crewView(crew, hash));
     }
 
-    if (parts[3] === "members" && parts[4] && parts.length === 5) {
+    if (parts[3] === "members" && parts[4] && (parts.length === 5 || parts.length === 6)) {
       const id = parts[4];
       if (!ID_RE.test(id)) return send(res, 400, { error: "Bad member id" });
       const key = String(req.headers["x-member-key"] || "");
       if (!TOKEN_RE.test(key)) return send(res, 401, { error: "Missing member key" });
       const existing = crew.members[id];
       if (existing && !safeEqual(existing.keyHash, sha(key))) return send(res, 403, { error: "Not your member slot" });
+
+      // /members/:id/location — share or stop sharing your position
+      if (parts[5] === "location") {
+        if (!existing) return send(res, 404, { error: "Join the crew first" });
+        let cl = locs.get(hash);
+        if (req.method === "PUT") {
+          const b = await readJson(req);
+          const lat = Number(b.lat), lon = Number(b.lon), acc = Number(b.acc);
+          if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180) || !isFinite(lat) || !isFinite(lon)) return send(res, 400, { error: "Bad position" });
+          if (!cl) { cl = new Map(); locs.set(hash, cl); }
+          const now = Date.now();
+          cl.set(id, { lat: Math.round(lat * 1e5) / 1e5, lon: Math.round(lon * 1e5) / 1e5,
+            acc: isFinite(acc) ? Math.min(Math.max(Math.round(acc), 0), 5000) : null, t: now });
+          existing.seen = now;
+          return send(res, 200, { ok: true });
+        }
+        if (req.method === "DELETE") {
+          if (cl) cl.delete(id);
+          return send(res, 200, { ok: true });
+        }
+        return send(res, 405, { error: "Method not allowed" });
+      }
+
+      // /members/:id/meet — set or clear the crew's meet-up spot (x/y are fractions of the festival map)
+      if (parts[5] === "meet") {
+        if (!existing) return send(res, 404, { error: "Join the crew first" });
+        if (req.method === "PUT") {
+          const b = await readJson(req);
+          const x = Number(b.x), y = Number(b.y);
+          if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return send(res, 400, { error: "Bad spot" });
+          const label = String(b.label || "").replace(/[\u0000-\u001f\u007f<>]/g, "").trim().slice(0, 40) || "Meet here";
+          crew.meet = { x: Math.round(x * 1e4) / 1e4, y: Math.round(y * 1e4) / 1e4, label, by: existing.name, t: Date.now() };
+        } else if (req.method === "DELETE") {
+          crew.meet = null;
+        } else return send(res, 405, { error: "Method not allowed" });
+        crew.touched = Date.now();
+        save();
+        return send(res, 200, crewView(crew, hash));
+      }
+      if (parts.length !== 5) return send(res, 404, { error: "Not found" });
 
       if (req.method === "PUT") {
         const body = await readJson(req);
@@ -193,10 +249,12 @@ async function handle(req, res) {
         crew.members[id] = { keyHash: sha(key), name, bits, updated: now, seen: now };
         crew.touched = now;
         save();
-        return send(res, 200, crewView(crew));
+        return send(res, 200, crewView(crew, hash));
       }
       if (req.method === "DELETE") {
         delete crew.members[id];
+        const cl = locs.get(hash);
+        if (cl) cl.delete(id);
         crew.touched = Date.now();
         save();
         return send(res, 200, { ok: true });

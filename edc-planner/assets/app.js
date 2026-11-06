@@ -419,10 +419,11 @@
       pins += `<div class="pin ${cls}" style="left:${x * 100}%;top:${y * 100}%;--c:${st.color}">
         <div class="lbl">${st.name.toUpperCase()}${sub ? `<small>${esc(sub)}</small>` : ""}</div><div class="tip"></div></div>`;
     });
-    $("#map-pins").innerHTML = pins;
+    $("#map-pins").innerHTML = pins + mapCrewHtml();
 
     let svg = "";
-    let info = `Tap <b>Map</b> on a walking step in My Plan to see the route.`;
+    let info = mapTransform() ? `Map calibrated ✓ <a href="#" id="calib-reset" style="color:var(--circuit)">Reset</a>${state.meet ? ` · <a href="#" id="meet-clear" style="color:var(--circuit)">Clear meet-up</a>` : ""}`
+      : `Tap <b>📍 I'm here</b> at two spots during the festival to put your crew on the map.${state.meet ? ` <a href="#" id="meet-clear" style="color:var(--circuit)">Clear meet-up</a>` : ""}`;
     if (Array.isArray(mapRoute)) {
       const a = D.mapPins[mapRoute[0]], b = D.mapPins[mapRoute[1]];
       const ax = a[0] * 1000, ay = a[1] * 1250 + 8, bx = b[0] * 1000, by = b[1] * 1250 + 8;
@@ -491,6 +492,7 @@
         apply(z === "+" ? scale * 1.5 : z === "-" ? scale / 1.5 : 1);
         return;
       }
+      if (box.classList.contains("picking")) return; // placing a pin / calibrating: no double-tap zoom
       const now = Date.now();
       if (now - lastTap < 300) apply(scale > 1.5 ? 1 : 2.5, e.clientX, e.clientY);
       lastTap = now;
@@ -793,6 +795,7 @@
     s.lastTry = Date.now();
     try {
       let view;
+      if (state.meetDirty) { try { await pushMeet(); } catch (e) { if (e.offline) throw e; state.meetDirty = false; } }
       if (s.dirty && state.me) {
         const sig = state.me + "|" + myBits();
         view = await api("PUT", `/api/crews/${s.token}/members/${s.memberId}`, { name: state.me, bits: myBits() });
@@ -841,7 +844,9 @@
       f.picks = picks;
       f.updated = m.updated + skew;
       f.seen = m.seen + skew;
+      f.loc = m.loc ? { lat: m.loc.lat, lon: m.loc.lon, acc: m.loc.acc, t: m.loc.t + skew } : null;
     });
+    if (!state.meetDirty) state.meet = view.meet ? Object.assign({}, view.meet, { t: view.meet.t + skew }) : null;
     state.friends = state.friends.filter((f) => !f.live || seenIds.has(f.id));
     planCache = {};
   }
@@ -884,7 +889,9 @@
     const s = state.sync;
     if (!s) return;
     try { await api("DELETE", `/api/crews/${s.token}/members/${s.memberId}`); } catch (e) { /* offline: slot just goes stale */ }
+    if (window.Native && window.Native.stopSharing) window.Native.stopSharing();
     state.sync = null;
+    state.meetDirty = false;
     state.friends = state.friends.filter((f) => !f.live);
     planCache = {};
     save();
@@ -943,6 +950,309 @@
     </div>`;
   }
 
+  // ---------- find my crew (live locations) ----------
+  const STALE_MIN = 15;
+  let findTimer = null, findPoll = 0, webFix = null, webWatch = null;
+
+  function myFix() {
+    if (window.EDC_FAKE_FIX) return window.EDC_FAKE_FIX; // test hook
+    if (window.Native) {
+      try { const s = window.Native.myLocation(); return s ? JSON.parse(s) : null; } catch (e) { return null; }
+    }
+    return webFix;
+  }
+  function myHeading() {
+    if (window.EDC_FAKE_HEADING != null) return window.EDC_FAKE_HEADING;
+    const h = window.Native ? window.Native.heading() : -1;
+    return h >= 0 ? h : -1;
+  }
+  function locAllowed() {
+    return window.Native ? window.Native.locationAllowed() : true;
+  }
+  // metres east/north of a reference point
+  function toMeters(lat, lon, lat0, lon0) {
+    return { e: (lon - lon0) * Math.cos(lat0 * Math.PI / 180) * 111320, n: (lat - lat0) * 110540 };
+  }
+  function distBearing(a, b) {
+    const m = toMeters(b.lat, b.lon, a.lat, a.lon);
+    return { d: Math.hypot(m.e, m.n), brg: (Math.atan2(m.e, m.n) * 180 / Math.PI + 360) % 360 };
+  }
+  function cardinal(brg) {
+    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(brg / 45) % 8];
+  }
+  function fmtDist(d) {
+    return d < 1000 ? Math.round(d / 5) * 5 + " m" : (d / 1000).toFixed(1) + " km";
+  }
+  function untilTwoAm() {
+    const d = new Date();
+    const t = new Date(d);
+    t.setHours(2, 0, 0, 0);
+    if (t <= d) t.setDate(t.getDate() + 1);
+    return t.getTime();
+  }
+  function sharingInfo() {
+    if (!window.Native) return state.webSharing || null;
+    try { const s = window.Native.sharing(); return s ? JSON.parse(s) : null; } catch (e) { return null; }
+  }
+
+  // ----- map calibration: two "I'm here" taps link the drawn map to GPS -----
+  function mapTransform() {
+    const c = state.calib || [];
+    if (c.length < 2) return null;
+    const p1 = c[c.length - 2], p2 = c[c.length - 1];
+    const lat0 = p1.lat, lon0 = p1.lon;
+    const cm = (p) => { const m = toMeters(p.lat, p.lon, lat0, lon0); return [m.e, -m.n]; };
+    const cp = (p) => [p.x * 1000, p.y * 1250];
+    const m1 = cm(p1), m2 = cm(p2), q1 = cp(p1), q2 = cp(p2);
+    // complex a = (q2-q1)/(m2-m1)
+    const dm = [m2[0] - m1[0], m2[1] - m1[1]], dq = [q2[0] - q1[0], q2[1] - q1[1]];
+    const den = dm[0] * dm[0] + dm[1] * dm[1];
+    if (den < 400) return null;
+    const a = [(dq[0] * dm[0] + dq[1] * dm[1]) / den, (dq[1] * dm[0] - dq[0] * dm[1]) / den];
+    const b = [q1[0] - (a[0] * m1[0] - a[1] * m1[1]), q1[1] - (a[0] * m1[1] + a[1] * m1[0])];
+    return {
+      metersPerPx: 1 / Math.hypot(a[0], a[1]),
+      toMap(lat, lon) {
+        const m = cm({ lat, lon });
+        return { x: (a[0] * m[0] - a[1] * m[1] + b[0]) / 1000, y: (a[0] * m[1] + a[1] * m[0] + b[1]) / 1250 };
+      }
+    };
+  }
+  function nearStage(lat, lon) {
+    const T = mapTransform();
+    if (!T) return "";
+    const p = T.toMap(lat, lon);
+    let best = null;
+    D.stages.forEach((st) => {
+      const [x, y] = D.mapPins[st.id];
+      const dm = Math.hypot((p.x - x) * 1000, (p.y - y) * 1250) * T.metersPerPx;
+      if (!best || dm < best.d) best = { d: dm, st };
+    });
+    return best && best.d < 90 ? "near " + best.st.name : "";
+  }
+
+  function crewLocs() {
+    return visibleFriends().filter((f) => f.live && f.loc && Date.now() - f.loc.t < 2 * 3600000);
+  }
+
+  function renderFind() {
+    const el = $("#find");
+    const fix = myFix();
+    const hd = myHeading();
+    const share = sharingInfo();
+    let html = `<div class="find-head"><h2>📡 Find my crew</h2><button class="chip-btn" id="find-close">Done</button></div>`;
+
+    if (!state.sync) {
+      el.innerHTML = html + `<div class="empty"><p>Finding friends uses your <b>live crew</b> server. Set one up in the Crew tab first. The meet-up spot on the Map works without it.</p>
+        <button class="big-btn" data-go="crew">Go to Crew</button></div>`;
+      return;
+    }
+    if (!locAllowed()) {
+      el.innerHTML = html + `<div class="crew-card"><p class="small" style="margin-top:0">To show where your friends are compared to you, the app needs your location. It's only sent to your crew if you turn on sharing below.</p>
+        <button class="big-btn" id="loc-allow">Allow location</button></div>`;
+      return;
+    }
+
+    // share toggle
+    const on = !!share;
+    let st = "Off. Your crew can't see you.";
+    if (on) {
+      const s = String(share.status || "");
+      const sent = s.startsWith("ok:") ? "last sent " + ago(Number(s.split(":")[1])) : s.startsWith("err:") ? "no signal, retrying" : "waiting for GPS";
+      st = `On until ${new Date(share.until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · ${sent}`;
+    }
+    html += `<div class="crew-card"><label>Share my location with the crew</label>
+      <div class="seg" id="share-seg">
+        <button data-share="0" class="${!on ? "on" : ""}">Off</button>
+        <button data-share="1h">1 hour</button>
+        <button data-share="2am">Until 2 AM</button></div>
+      <div class="sync-status" style="margin-top:8px"><i class="sdot ${on ? "ok" : "off"}"></i><span>${st}</span></div></div>`;
+
+    if (state.meet) html += meetCardHtml(fix);
+
+    // radar
+    const people = crewLocs().map((f) => {
+      const db = fix ? distBearing(fix, f.loc) : null;
+      return { f, db, stale: Date.now() - f.loc.t > STALE_MIN * 60000 };
+    }).sort((a, b) => (a.db ? a.db.d : 1e9) - (b.db ? b.db.d : 1e9));
+    const far = Math.max(60, ...people.filter((p) => p.db && !p.stale).map((p) => p.db.d));
+    const steps = [50, 100, 200, 300, 500, 1000, 2000, 5000];
+    const range = steps.find((s) => s >= far * 1.1) || 5000;
+    const rot = hd >= 0 ? hd : 0;
+    let svg = `<svg viewBox="0 0 300 300"><defs><radialGradient id="sweep" cx="0" cy="0" r="1"><stop offset="0" stop-color="#c6ff3d" stop-opacity=".25"/><stop offset="1" stop-color="#c6ff3d" stop-opacity="0"/></radialGradient></defs>
+      <circle class="radar-bg" cx="150" cy="150" r="140"/>`;
+    [0.33, 0.66].forEach((k) => (svg += `<circle class="radar-ring" cx="150" cy="150" r="${140 * k}"/><text class="radar-lbl" x="153" y="${150 - 140 * k + 10}">${fmtDist(range * k)}</text>`));
+    svg += `<text class="radar-lbl" x="153" y="20">${fmtDist(range)}</text>`;
+    svg += `<path class="radar-sweep" d="M150,150 L150,10 A140,140 0 0,1 249,51 Z"/>`;
+    // north marker rotates with the phone
+    const nx = 150 + 128 * Math.sin(-rot * Math.PI / 180), ny = 150 - 128 * Math.cos(-rot * Math.PI / 180);
+    svg += `<text class="radar-n" x="${nx}" y="${ny}" text-anchor="middle" dominant-baseline="central">N</text>`;
+    people.forEach((p) => {
+      if (!p.db) return;
+      const r = Math.min(1, p.db.d / range) * 140;
+      const a = (p.db.brg - rot) * Math.PI / 180;
+      const x = 150 + r * Math.sin(a), y = 150 - r * Math.cos(a);
+      svg += `<g class="radar-dot ${p.stale ? "stale" : ""}"><circle cx="${x}" cy="${y}" r="11" fill="${p.f.color}" stroke="#10061c" stroke-width="2"/><text x="${x}" y="${y}">${initial(p.f.name)}</text></g>`;
+    });
+    svg += `<circle class="radar-me" cx="150" cy="150" r="7"/><path d="M150,136 l6,10 h-12z" fill="#c6ff3d"/></svg>`;
+    let note = !fix ? "Waiting for GPS…" : hd < 0 ? "North is up (no compass on this phone)" : "Turns with your phone. Straight ahead is up.";
+    if (fix && fix.acc > 50) note += ` · GPS ±${Math.round(fix.acc)} m`;
+    html += `<div class="radar-wrap">${svg}</div><div class="radar-note">${note}</div>`;
+
+    // list
+    html += `<div class="flist">`;
+    if (!people.length) {
+      html += `<p class="small" style="text-align:center">Nobody in your crew is sharing their location right now.</p>`;
+    }
+    people.forEach((p) => {
+      const near = nearStage(p.f.loc.lat, p.f.loc.lon);
+      const arrowRot = p.db ? p.db.brg - rot : 0;
+      html += `<div class="fl ${p.stale ? "stale" : ""}" style="--c:${p.f.color}">${avatar(p.f, true)}
+        <div class="fi"><b>${esc(p.f.name)}</b><span>${p.stale ? "last seen " : "updated "}${ago(p.f.loc.t)}${p.f.loc.acc ? " · ±" + p.f.loc.acc + " m" : ""}${near ? " · " + near : ""}</span></div>
+        ${p.db ? `<svg class="arrow" viewBox="0 0 24 24" style="transform:rotate(${arrowRot}deg)"><path d="M12 2 L19 20 L12 16 L5 20 Z" fill="${p.f.color}"/></svg>
+        <div class="dist">${fmtDist(p.db.d)}<small>${cardinal(p.db.brg)}</small></div>` : ""}</div>`;
+    });
+    // members not sharing
+    visibleFriends().filter((f) => f.live && !people.some((p) => p.f === f)).forEach((f) => {
+      html += `<div class="fl stale" style="--c:${f.color}">${avatar(f, true)}<div class="fi"><b>${esc(f.name)}</b><span>Not sharing location</span></div></div>`;
+    });
+    html += `</div><p class="small">Friends' positions update when their phone and yours have signal. Arrows show the straight-line direction, so walkways and crowds may make the trip longer.</p>`;
+    el.innerHTML = html;
+  }
+
+  function meetCardHtml(fix) {
+    const m = state.meet;
+    let extra = "";
+    const T = mapTransform();
+    if (T && fix) {
+      // distance on the calibrated map between you and the pin
+      const p0 = T.toMap(fix.lat, fix.lon);
+      const dx = (m.x - p0.x) * 1000, dy = (m.y - p0.y) * 1250;
+      const d = Math.hypot(dx, dy) * T.metersPerPx;
+      extra = ` · about ${fmtDist(d)} from you`;
+    }
+    return `<div class="meet-card"><span style="font-size:22px">🚩</span><div class="grow">Meet-up: <b>${esc(m.label)}</b>${extra}<br>
+      <span style="color:var(--dim);font-size:12px">set by ${esc(m.by || "you")} ${m.t ? ago(m.t) : ""}${state.meetDirty ? " · not shared yet (no signal)" : ""}</span></div>
+      <button class="chip-btn" data-showmeet="1">Map</button></div>`;
+  }
+
+  function setSharing(mode) {
+    if (mode === "0") {
+      if (window.Native) window.Native.stopSharing(); else state.webSharing = null;
+      toast("Location sharing off");
+    } else {
+      const until = mode === "1h" ? Date.now() + 3600000 : untilTwoAm();
+      const cfg = { server: state.sync.server, token: state.sync.token, memberId: state.sync.memberId, key: state.sync.key, until };
+      if (state.sync.dirty) syncNow(); // make sure we exist on the server first
+      if (window.Native) {
+        if (window.Native.notificationsAllowed && !window.Native.notificationsAllowed()) window.Native.requestNotifications();
+        if (!window.Native.startSharing(JSON.stringify(cfg))) { toast("Allow location first"); return; }
+      } else {
+        state.webSharing = { until, status: "" };
+      }
+      toast("Your crew can now see you");
+    }
+    setTimeout(renderFind, 400);
+  }
+
+  function startFind() {
+    if (window.Native) window.Native.watch(true);
+    else if (navigator.geolocation && !webWatch) {
+      webWatch = navigator.geolocation.watchPosition((p) => { webFix = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: p.timestamp }; }, () => {}, { enableHighAccuracy: true });
+    }
+    clearInterval(findTimer);
+    findPoll = 0;
+    findTimer = setInterval(() => {
+      if (state.view !== "find" || document.hidden) return;
+      renderFind();
+      if (++findPoll % 15 === 0) syncNow(); // refresh friends' positions every ~15 s
+    }, 1000);
+    syncNow();
+  }
+  function stopFind() {
+    clearInterval(findTimer);
+    findTimer = null;
+    if (window.Native) window.Native.watch(false);
+    else if (webWatch != null) { navigator.geolocation.clearWatch(webWatch); webWatch = null; }
+  }
+  window.onLocationPermission = function (ok) {
+    if (ok) { if (state.view === "find") startFind(); if (state.view === "map") renderMap(); }
+    else toast("Location permission denied. You can allow it in Settings → Apps");
+    renderAll();
+  };
+
+  // ----- map modes: calibrate ("I'm here") or place the meet-up spot -----
+  let mapMode = null;
+  function setMapMode(m) {
+    mapMode = m;
+    const bar = $("#map-mode");
+    $("#map-box").classList.toggle("picking", !!m);
+    if (!m) { bar.hidden = true; return; }
+    if (m === "calib" && window.Native) window.Native.watch(true);
+    bar.hidden = false;
+    bar.innerHTML = (m === "calib"
+      ? "<span>Tap the exact spot on the map where you're standing now.</span>"
+      : "<span>Tap the meet-up spot on the map.</span>") + `<button id="map-mode-cancel">Cancel</button>`;
+  }
+  function mapTap(e) {
+    const r = $("#map-inner").getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
+    if (mapMode === "calib") {
+      const fix = myFix();
+      if (!fix) { toast("No GPS fix yet. Try again in a moment"); return; }
+      if (fix.acc > 60) { toast(`GPS is too rough right now (±${Math.round(fix.acc)} m). Try again in the open`); return; }
+      if (Date.now() - fix.t > 180000 && !window.EDC_FAKE_FIX) { toast("GPS fix is old. Wait a moment and try again"); return; }
+      state.calib = (state.calib || []).concat([{ x, y, lat: fix.lat, lon: fix.lon }]).slice(-2);
+      const T = mapTransform();
+      if (state.calib.length < 2) toast("Got it. Now walk to another spot at least 100 m away and tap “I'm here” again");
+      else if (!T) { state.calib = state.calib.slice(-1); toast("Those spots were too close together. Try one further away"); }
+      else if (T.metersPerPx * 1000 < 150 || T.metersPerPx * 1000 > 5000) { state.calib = state.calib.slice(-1); toast("That didn't line up. Check the spot you tapped and try again"); }
+      else toast("Map calibrated ✓ Your crew now shows up on the map");
+    } else if (mapMode === "meet") {
+      const label = (prompt("Name the meet-up spot", "Ferris wheel") || "").trim().slice(0, 40);
+      if (!label) { setMapMode(null); return; }
+      state.meet = { x, y, label, by: state.me || "You", t: Date.now() };
+      state.meetDirty = !!state.sync;
+      if (state.sync) syncNow(); else toast("Meet-up spot saved. Join a live crew to share it");
+    }
+    setMapMode(null);
+    save();
+    renderMap();
+  }
+
+  async function pushMeet() {
+    const s = state.sync;
+    if (!s || !state.meetDirty) return;
+    const path = `/api/crews/${s.token}/members/${s.memberId}/meet`;
+    const view = state.meet
+      ? await api("PUT", path, { x: state.meet.x, y: state.meet.y, label: state.meet.label })
+      : await api("DELETE", path);
+    state.meetDirty = false;
+    return view;
+  }
+
+  function mapCrewHtml() {
+    let html = "";
+    if (state.meet) {
+      html += `<div class="meetpin" style="left:${state.meet.x * 100}%;top:${state.meet.y * 100}%"><div class="flag">🚩</div><div class="lbl2">${esc(state.meet.label)}</div></div>`;
+    }
+    const T = mapTransform();
+    if (!T) return html;
+    crewLocs().forEach((f) => {
+      const p = T.toMap(f.loc.lat, f.loc.lon);
+      if (p.x < -0.05 || p.x > 1.05 || p.y < -0.05 || p.y > 1.05) return;
+      const stale = Date.now() - f.loc.t > STALE_MIN * 60000;
+      html += `<div class="cdot ${stale ? "stale" : ""}" style="left:${p.x * 100}%;top:${p.y * 100}%;--c:${f.color}">${initial(f.name)}</div>`;
+    });
+    const fix = locAllowed() ? myFix() : null;
+    if (fix && Date.now() - fix.t < 600000) {
+      const p = T.toMap(fix.lat, fix.lon);
+      html += `<div class="cdot me" style="left:${p.x * 100}%;top:${p.y * 100}%"></div>`;
+    }
+    return html;
+  }
+
   function renderCrew() {
     // don't redraw under someone typing (the 60s refresh and sync would wipe the field)
     const a = document.activeElement;
@@ -964,6 +1274,8 @@
     </div>`;
 
     html += syncCardHtml();
+    if (state.sync) html += `<button class="big-btn" id="find-open" style="margin-bottom:12px">📡 Find my crew</button>`;
+    if (state.meet) html += meetCardHtml(locAllowed() ? myFix() : null);
 
     // add friend
     html += `<div class="crew-card">
@@ -1076,9 +1388,13 @@
   makeZoom($("#poster-box"), $("#poster-inner"));
 
   function setView(v) {
+    if (state.view === "find" && v !== "find") stopFind();
+    if (v !== "map" && mapMode) setMapMode(null);
     state.view = v;
     $$(".view").forEach((el) => el.classList.toggle("active", el.id === "view-" + v));
-    $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
+    $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === (v === "find" ? "crew" : v)));
+    $("#days").hidden = v === "find";
+    if (v === "find") startFind();
     if (v !== "schedule") closeSearch();
     renderAll();
     save();
@@ -1091,6 +1407,7 @@
     if (state.view === "map") renderMap();
     if (state.view === "posters") renderPosters();
     if (state.view === "crew") renderCrew();
+    if (state.view === "find") renderFind();
   }
 
   function closeSearch() {
@@ -1112,6 +1429,24 @@
   document.addEventListener("click", (e) => {
     const t = e.target;
     let el;
+    if (mapMode && t.closest("#map-inner")) { mapTap(e); return; }
+    if (t.closest("#map-mode-cancel")) { setMapMode(null); return; }
+    if (t.closest("#find-open") || t.closest("#find-open-map")) { setView("find"); return; }
+    if (t.closest("#find-close")) { setView("crew"); return; }
+    if (t.closest("#loc-allow")) { window.Native ? window.Native.requestLocation() : renderFind(); return; }
+    if ((el = t.closest("[data-share]"))) { setSharing(el.dataset.share); return; }
+    if (t.closest("#calib-start")) {
+      if (!locAllowed()) { window.Native.requestLocation(); return; }
+      setMapMode("calib"); return;
+    }
+    if (t.closest("#meet-start")) { setMapMode("meet"); return; }
+    if (t.closest("#calib-reset")) { e.preventDefault(); state.calib = []; save(); renderMap(); toast("Map calibration cleared"); return; }
+    if (t.closest("#meet-clear")) {
+      e.preventDefault();
+      if (confirm("Clear the meet-up spot for everyone?")) { state.meet = null; state.meetDirty = !!state.sync; save(); renderMap(); if (state.sync) syncNow(); }
+      return;
+    }
+    if (t.closest("[data-showmeet]")) { mapRoute = "none"; setView("map"); return; }
     const ae = document.activeElement;
     if (t.closest("button") && ae && ae.tagName === "INPUT") ae.blur();
     if ((el = t.closest("#days button"))) {
@@ -1195,6 +1530,8 @@
   window.onBack = function () {
     if (!$("#sheet").hidden) { closeSheet(); return true; }
     if (!$("#searchbar").hidden) { closeSearch(); return true; }
+    if (mapMode) { setMapMode(null); return true; }
+    if (state.view === "find") { setView("crew"); return true; }
     if (state.view !== "schedule") { setView("schedule"); return true; }
     return false;
   };

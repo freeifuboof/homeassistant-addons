@@ -14,6 +14,8 @@ A pocket planner for **EDC Orlando 2026** (Tinker Field, Nov 6–8). It works of
   - *Where everyone is*: during the festival, where each friend's plan puts them;
   - colored dots on the schedule and "👥 with …" on your plan show who's going where.
   Codes are a snapshot, so a friend who changes picks needs to share again. No account or internet needed.
+- **Find my crew** (needs a live crew): turn on *Share my location* (Off / 1 hour / until 2 AM; a notification shows while it's on). A radar that turns with your phone shows how far away each friend is and which way. With signal, positions update about every 45 s. Tap **📍 I'm here** on the Map at two spots to calibrate it, and friends appear as dots on the festival map too.
+- **Meet-up spot**: drop a 🚩 on the map ("Ferris wheel") that the whole crew sees, so everyone knows where to regroup if phones die or lose signal.
 - **Live crews** (optional): run [edc-sync](../edc-sync) on your own server (e.g. Unraid behind a Cloudflare Tunnel). Friends join with an invite link and everyone's picks then sync automatically. The app stays fully usable offline and uploads changes when it gets signal.
 - Search (⌕) by artist or genre across all days, and share your plan as text.
 

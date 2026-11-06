@@ -68,6 +68,23 @@ async function req(method, url, body, headers) {
     assert.equal(r.json.name, "Test crew");
     assert.ok(!JSON.stringify(r.json).includes("keyHash"), "key hashes are never returned");
 
+    // locations: only members, kept in memory, visible to the crew
+    assert.equal((await req("PUT", `/api/crews/${t}/members/strangerX1/location`, { lat: 28.5, lon: -81.4 }, { "X-Member-Key": "c".repeat(22) })).status, 404);
+    assert.equal((await req("PUT", `/api/crews/${t}/members/memberAAA/location`, { lat: 28.5, lon: -81.4 }, { "X-Member-Key": keyB })).status, 403);
+    assert.equal((await req("PUT", `/api/crews/${t}/members/memberAAA/location`, { lat: 200, lon: 0 }, { "X-Member-Key": keyA })).status, 400);
+    assert.equal((await req("PUT", `/api/crews/${t}/members/memberAAA/location`, { lat: 28.5376123, lon: -81.4031456, acc: 8.4 }, { "X-Member-Key": keyA })).status, 200);
+    r = await req("GET", `/api/crews/${t}`);
+    const locA = r.json.members.find((m) => m.id === "memberAAA").loc;
+    assert.deepEqual([locA.lat, locA.lon, locA.acc], [28.53761, -81.40315, 8]);
+    assert.equal(r.json.members.find((m) => m.id === "memberBBB").loc, null);
+
+    // meet-up spot
+    r = await req("PUT", `/api/crews/${t}/members/memberBBB/meet`, { x: 0.52, y: 0.47, label: "Ferris wheel <3" }, { "X-Member-Key": keyB });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.meet.label, "Ferris wheel 3");
+    assert.equal(r.json.meet.by, "bAlex/b");
+    assert.equal((await req("PUT", `/api/crews/${t}/members/memberBBB/meet`, { x: 2, y: 0.5 }, { "X-Member-Key": keyB })).status, 400);
+
     // leave
     assert.equal((await req("DELETE", `/api/crews/${t}/members/memberBBB`, undefined, { "X-Member-Key": keyB })).status, 200);
     r = await req("GET", `/api/crews/${t}`);
@@ -86,6 +103,9 @@ async function req(method, url, body, headers) {
     srv = await start();
     r = await req("GET", `/api/crews/${t}`);
     assert.equal(r.json.members[0].name, "Wade");
+    assert.equal(r.json.members[0].loc, null, "locations are not persisted");
+    assert.equal(r.json.meet.label, "Ferris wheel 3", "meet-up spot is persisted");
+    assert.ok(!raw.includes("28.53761"), "location never written to disk");
     console.log("edc-sync: all tests passed");
   } finally {
     srv.kill();

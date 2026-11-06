@@ -300,3 +300,48 @@ nav#tabs button { font-size: 10.5px; }
 .fsrc .sdot { width: 7px; height: 7px; margin-top: 0; }
 .chip-btn.grow { flex: 1; }
 .chip-btn.dim { color: var(--dim); }
+
+/* ---------- find my crew ---------- */
+#find { padding: 0 14px; }
+.find-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.find-head h2 { flex: 1; margin: 0; font-size: 20px; }
+.radar-wrap { position: relative; width: min(82vw, 330px); aspect-ratio: 1; margin: 6px auto 4px; }
+.radar-wrap svg { width: 100%; height: 100%; display: block; }
+.radar-ring { fill: none; stroke: #ffffff1c; stroke-width: 1; }
+.radar-bg { fill: #c6ff3d08; stroke: #c6ff3d55; stroke-width: 1.5; }
+.radar-lbl { fill: #a99cc4; font-size: 9px; font-weight: 700; }
+.radar-n { fill: var(--must); font-size: 12px; font-weight: 900; }
+.radar-me { fill: var(--lime); filter: drop-shadow(0 0 6px #c6ff3d); }
+.radar-dot text { font-size: 11px; font-weight: 900; fill: #10061c; text-anchor: middle; dominant-baseline: central; }
+.radar-dot.stale { opacity: .4; }
+.radar-sweep { fill: url(#sweep); transform-origin: 150px 150px; animation: sweep 4s linear infinite; }
+@keyframes sweep { to { transform: rotate(360deg); } }
+.radar-note { text-align: center; font-size: 12px; color: var(--dim); min-height: 16px; }
+.flist { display: grid; gap: 6px; margin-top: 10px; }
+.fl { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--c); border-radius: 14px; padding: 9px 12px; }
+.fl.stale { opacity: .55; }
+.fl .fi { flex: 1; min-width: 0; }
+.fl .fi b { font-size: 15px; }
+.fl .fi span { display: block; font-size: 12px; color: var(--dim); }
+.fl .dist { text-align: right; font-weight: 900; font-size: 17px; white-space: nowrap; }
+.fl .dist small { display: block; font-size: 11px; font-weight: 700; color: var(--dim); }
+.arrow { width: 34px; height: 34px; flex: none; transition: transform .25s; }
+.meet-card { display: flex; align-items: center; gap: 10px; background: #ff4fa01a; border: 1px solid #ff4fa066; border-radius: 14px; padding: 10px 12px; margin: 0 0 12px; font-size: 13px; }
+.meet-card b { color: #fff; }
+.meet-card .grow { flex: 1; }
+#map-tools { display: flex; gap: 6px; padding: 0 10px 8px; }
+#map-tools button { flex: 1; padding: 8px 4px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; font-weight: 800; }
+#map-mode { margin: 0 10px 8px; padding: 9px 12px; border-radius: 12px; background: var(--lime); color: #10061c; font-weight: 800; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+#map-mode[hidden] { display: none; }
+#map-mode span { flex: 1; }
+#map-mode button { font-weight: 900; text-decoration: underline; }
+.zoom-box.picking { outline: 3px solid var(--lime); }
+.cdot { position: absolute; transform: translate(-50%, -50%); width: 24px; height: 24px; border-radius: 50%; background: var(--c);
+  color: #10061c; font-size: 11px; font-weight: 900; display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 0 2px #10061c, 0 0 12px var(--c); pointer-events: none; }
+.cdot.stale { opacity: .45; }
+.cdot.me { width: 16px; height: 16px; background: var(--lime); box-shadow: 0 0 0 3px #10061c, 0 0 0 6px #c6ff3d66; animation: pulse 1.6s ease-out infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 3px #10061c, 0 0 0 12px #c6ff3d22; } }
+.meetpin { position: absolute; transform: translate(-50%, -100%); pointer-events: none; text-align: center; }
+.meetpin .flag { font-size: 26px; line-height: 1; filter: drop-shadow(0 0 6px #ff4fa0); }
+.meetpin .lbl2 { background: var(--must); color: #fff; font-size: 10px; font-weight: 900; padding: 2px 6px; border-radius: 8px; white-space: nowrap; }
