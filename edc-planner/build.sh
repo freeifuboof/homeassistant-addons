@@ -43,6 +43,6 @@ if [ ! -f "$KS" ]; then
     -storepass edcplanner -keypass edcplanner -dname "CN=EDC Planner" >/dev/null 2>&1
 fi
 apksigner sign --ks "$KS" --ks-pass pass:edcplanner --key-pass pass:edcplanner \
-  --out "$APK_NAME" "$OUT/aligned.apk"
+  --v4-signing-enabled false --out "$APK_NAME" "$OUT/aligned.apk"
 apksigner verify "$APK_NAME"
 echo "Built $(pwd)/$APK_NAME ($(du -h "$APK_NAME" | cut -f1))"
