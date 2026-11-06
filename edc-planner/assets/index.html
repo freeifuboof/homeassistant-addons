@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>EDC Planner</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand"><span class="logo">edc</span><span class="sub">ORLANDO 2026 · PLANNER</span></div>
+  <button class="icon-btn" id="btn-search" aria-label="Search artists">⌕</button>
+  <button class="icon-btn" id="btn-settings" aria-label="Settings">⚙</button>
+</header>
+
+<div id="searchbar" hidden>
+  <input id="search" type="search" placeholder="Search artist or genre…" autocomplete="off">
+  <button class="text-btn" id="search-close">Cancel</button>
+</div>
+
+<nav id="days"></nav>
+
+<main>
+  <section id="view-schedule" class="view active">
+    <div id="hint" class="hint">Tap a set: <b>☆</b> → <b class="want">★ Want</b> → <b class="must">♥ Must</b> → off</div>
+    <div id="search-results" hidden></div>
+    <div id="grid-wrap">
+      <div id="stage-head"></div>
+      <div id="grid"></div>
+    </div>
+  </section>
+
+  <section id="view-plan" class="view">
+    <div id="plan"></div>
+  </section>
+
+  <section id="view-map" class="view">
+    <div id="map-info"></div>
+    <div class="zoom-box" id="map-box">
+      <div class="zoom-inner" id="map-inner">
+        <img src="img/map.jpg" alt="Festival map" draggable="false">
+        <svg id="map-svg" viewBox="0 0 1000 1250" preserveAspectRatio="none"></svg>
+        <div id="map-pins"></div>
+      </div>
+      <div class="zoom-ctl"><button data-z="+">+</button><button data-z="-">−</button><button data-z="0">⤢</button></div>
+    </div>
+    <div id="walk-table"></div>
+  </section>
+
+  <section id="view-posters" class="view">
+    <div class="zoom-box tall" id="poster-box">
+      <div class="zoom-inner" id="poster-inner"><img id="poster-img" alt="Day poster" draggable="false"></div>
+      <div class="zoom-ctl"><button data-z="+">+</button><button data-z="-">−</button><button data-z="0">⤢</button></div>
+    </div>
+  </section>
+</main>
+
+<nav id="tabs">
+  <button data-view="schedule" class="active"><span>▦</span>Schedule</button>
+  <button data-view="plan"><span>★</span>My Plan<i id="plan-count"></i></button>
+  <button data-view="map"><span>⌖</span>Map</button>
+  <button data-view="posters"><span>▣</span>Posters</button>
+</nav>
+
+<div id="sheet-bg" hidden></div>
+<div id="sheet" hidden></div>
+<div id="toast" hidden></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
